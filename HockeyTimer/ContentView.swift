@@ -7,6 +7,7 @@
 import SwiftUI
 import AVFoundation
 import AudioToolbox
+import ActivityKit
 
 struct ContentView: View {
     @AppStorage("totalTime") private var totalTime: Int = 15 * 60
@@ -21,6 +22,9 @@ struct ContentView: View {
     @State private var intervalsCompleted: Int = 0
     @State private var audioPlayer: AVAudioPlayer?
     @State private var showSettings: Bool = false
+    @State private var endTime: Date?
+    @State private var liveActivity: Activity<HockeyTimerAttributes>?
+    @Environment(\.scenePhase) private var scenePhase
 
     private var backgroundColor: Color {
         ColorOption.color(for: backgroundColorKey)
@@ -62,9 +66,11 @@ struct ContentView: View {
                         showSettings.toggle()
                     }
                     .font(.caption)
-                    
+                    .disabled(isRunning || remainingTime > 0)
+                    .opacity(isRunning || remainingTime > 0 ? 0.4 : 1.0)
+
                     Spacer()
-                    
+
                     Button("🔄 Reset") {
                         resetTimer()
                     }
@@ -85,42 +91,74 @@ struct ContentView: View {
             )
         }
         .onAppear {
+            configureAudioSession()
             setupCustomAudio()
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: selectedSound) {
             setupCustomAudio()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active && isRunning {
+                recalculateTimerFromBackground()
+            }
         }
     }
     
     func toggleTimer() {
         isRunning.toggle()
         if isRunning {
-            if remainingTime == 0 {
+            let isNewStart = remainingTime == 0
+            if isNewStart {
                 remainingTime = totalTime
                 intervalsCompleted = 0
             }
-            startTimer()
+            startTimer(playInitialBeep: isNewStart)
         } else {
             timer?.invalidate()
         }
     }
-    
-    func startTimer() {
-        playBeep()
+
+    func startTimer(playInitialBeep: Bool) {
+        if playInitialBeep {
+            playBeep()
+            endTime = Date().addingTimeInterval(Double(remainingTime))
+            startLiveActivity()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             remainingTime -= 1
-            
-            if remainingTime % interval == 0 {
-                playBeep()
-                if remainingTime != totalTime {
-                    intervalsCompleted += 1
-                }
-            }
-            
+            updateLiveActivity()
+
             if remainingTime <= 0 {
                 resetTimer()
                 playBeep()
+            } else if remainingTime % interval == 0 {
+                playBeep()
+                intervalsCompleted += 1
             }
+        }
+    }
+
+    func recalculateTimerFromBackground() {
+        guard let endTime = endTime else { return }
+
+        timer?.invalidate()
+
+        let now = Date()
+        let newRemainingTime = Int(endTime.timeIntervalSince(now))
+
+        if newRemainingTime <= 0 {
+            resetTimer()
+            playBeep()
+        } else {
+            let elapsed = totalTime - newRemainingTime
+            intervalsCompleted = elapsed / interval
+            remainingTime = newRemainingTime
+            updateLiveActivity()
+            startTimer(playInitialBeep: false)
         }
     }
     
@@ -129,11 +167,23 @@ struct ContentView: View {
         isRunning = false
         remainingTime = 0
         intervalsCompleted = 0
+        endTime = nil
+        endLiveActivity()
     }
     
+    func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            print("Failed to configure audio session: \(error)")
+        }
+    }
+
     func setupCustomAudio() {
         guard let path = Bundle.main.path(forResource: selectedSound, ofType: "wav") else {
-            print("\(selectedSound).wav не найден!")
+            print("\(selectedSound).wav not found!")
             return
         }
         let url = URL(fileURLWithPath: path)
@@ -141,9 +191,8 @@ struct ContentView: View {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
             audioPlayer?.prepareToPlay()
             audioPlayer?.volume = Float(beepVolume)
-            print("✅ \(selectedSound).wav загружен!")
         } catch {
-            print("❌ Ошибка аудио: \(error)")
+            print("Audio error: \(error)")
         }
     }
     
@@ -152,6 +201,60 @@ struct ContentView: View {
         audioPlayer?.currentTime = 0
         audioPlayer?.play()
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+    }
+
+    // MARK: - Live Activity
+
+    func startLiveActivity() {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+
+        let attributes = HockeyTimerAttributes(interval: interval, totalTime: totalTime)
+        let state = HockeyTimerAttributes.ContentState(
+            remainingTime: remainingTime,
+            intervalsCompleted: intervalsCompleted,
+            totalIntervals: totalTime / interval
+        )
+
+        do {
+            liveActivity = try Activity.request(
+                attributes: attributes,
+                content: .init(state: state, staleDate: nil)
+            )
+        } catch {
+            print("Failed to start Live Activity: \(error)")
+        }
+    }
+
+    func updateLiveActivity() {
+        guard let liveActivity = liveActivity else { return }
+
+        let state = HockeyTimerAttributes.ContentState(
+            remainingTime: remainingTime,
+            intervalsCompleted: intervalsCompleted,
+            totalIntervals: totalTime / interval
+        )
+
+        Task {
+            await liveActivity.update(.init(state: state, staleDate: nil))
+        }
+    }
+
+    func endLiveActivity() {
+        guard let liveActivity = liveActivity else { return }
+
+        let finalState = HockeyTimerAttributes.ContentState(
+            remainingTime: 0,
+            intervalsCompleted: totalTime / interval,
+            totalIntervals: totalTime / interval
+        )
+
+        Task {
+            await liveActivity.end(
+                .init(state: finalState, staleDate: nil),
+                dismissalPolicy: .immediate
+            )
+        }
+        self.liveActivity = nil
     }
 }
 
