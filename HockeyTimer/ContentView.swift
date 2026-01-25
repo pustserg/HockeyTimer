@@ -9,17 +9,22 @@ import AVFoundation
 import AudioToolbox
 
 struct ContentView: View {
-    @State private var totalTime: Int = 15 * 60
-    @State private var interval: Int = 60
+    @AppStorage("totalTime") private var totalTime: Int = 15 * 60
+    @AppStorage("interval") private var interval: Int = 60
+    @AppStorage("beepVolume") private var beepVolume: Double = 1.0
+    @AppStorage("selectedSound") private var selectedSound: String = "hockey whistle"
+    @AppStorage("backgroundColorKey") private var backgroundColorKey: String = "white"
+
     @State private var remainingTime: Int = 0
     @State private var isRunning: Bool = false
     @State private var timer: Timer? = nil
     @State private var intervalsCompleted: Int = 0
     @State private var audioPlayer: AVAudioPlayer?
     @State private var showSettings: Bool = false
-    @State private var backgroundColor: Color = .white
-    @State private var beepVolume: Float = 1.0
-    @State private var selectedSound: String = "hockey whistle"
+
+    private var backgroundColor: Color {
+        ColorOption.color(for: backgroundColorKey)
+    }
     
     var body: some View {
         ZStack {
@@ -74,7 +79,7 @@ struct ContentView: View {
             SettingsView(
                 interval: $interval,
                 totalTime: $totalTime,
-                backgroundColor: $backgroundColor,
+                backgroundColorKey: $backgroundColorKey,
                 beepVolume: $beepVolume,
                 selectedSound: $selectedSound
             )
@@ -135,7 +140,7 @@ struct ContentView: View {
         do {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
             audioPlayer?.prepareToPlay()
-            audioPlayer?.volume = beepVolume
+            audioPlayer?.volume = Float(beepVolume)
             print("✅ \(selectedSound).wav загружен!")
         } catch {
             print("❌ Ошибка аудио: \(error)")
@@ -143,7 +148,7 @@ struct ContentView: View {
     }
     
     func playBeep() {
-        audioPlayer?.volume = beepVolume
+        audioPlayer?.volume = Float(beepVolume)
         audioPlayer?.currentTime = 0
         audioPlayer?.play()
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
@@ -153,8 +158,8 @@ struct ContentView: View {
 struct SettingsView: View {
     @Binding var interval: Int
     @Binding var totalTime: Int
-    @Binding var backgroundColor: Color
-    @Binding var beepVolume: Float
+    @Binding var backgroundColorKey: String
+    @Binding var beepVolume: Double
     @Binding var selectedSound: String
     @Environment(\.dismiss) private var dismiss
     @State private var testAudioPlayer: AVAudioPlayer?
@@ -166,28 +171,15 @@ struct SettingsView: View {
                     Stepper("Interval: \(interval) sec", value: $interval, in: 30...300, step: 30)
                     Stepper("Total: \(totalTime / 60) min", value: $totalTime, in: 5*60...60*60, step: 60)
                 }
-                
+
                 Section("Appearance") {
-                    Picker("Background", selection: $backgroundColor) {
-                        Group {
-                            Text("🖤 Black").tag(Color.black)
-                            Text("🔵 Dark Blue").tag(Color.blue.opacity(0.9))
-                            Text("🔷 Navy").tag(Color(red: 0.1, green: 0.1, blue: 0.2))
-                            Text("🟢 Dark Green").tag(Color.green.opacity(0.9))
-                        }
-                        
-                        Divider()
-                        
-                        Group {
-                            Text("⚪ White").tag(Color.white)
-                            Text("📜 Ivory").tag(Color(red: 1.0, green: 1.0, blue: 0.98))
-                            Text("⬜ Light Grey").tag(Color.gray.opacity(0.9))
-                            Text("📰 Off-White").tag(Color(red: 0.98, green: 0.98, blue: 1.0))
-                            Text("🥛 Cream").tag(Color(red: 1.0, green: 0.98, blue: 0.92))
+                    Picker("Background", selection: $backgroundColorKey) {
+                        ForEach(ColorOption.allCases) { option in
+                            Text(option.label).tag(option.key)
                         }
                     }
                 }
-                
+
                 Section("Sound") {
                     HStack {
                         Text("Volume")
@@ -226,11 +218,58 @@ struct SettingsView: View {
         let url = URL(fileURLWithPath: path)
         do {
             testAudioPlayer = try AVAudioPlayer(contentsOf: url)
-            testAudioPlayer?.volume = beepVolume
+            testAudioPlayer?.volume = Float(beepVolume)
             testAudioPlayer?.play()
         } catch {
             print("Error playing test sound: \(error)")
         }
+    }
+}
+
+enum ColorOption: String, CaseIterable, Identifiable {
+    case black
+    case darkBlue
+    case navy
+    case darkGreen
+    case white
+    case ivory
+    case lightGrey
+    case offWhite
+    case cream
+
+    var id: String { rawValue }
+    var key: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .black: return "🖤 Black"
+        case .darkBlue: return "🔵 Dark Blue"
+        case .navy: return "🔷 Navy"
+        case .darkGreen: return "🟢 Dark Green"
+        case .white: return "⚪ White"
+        case .ivory: return "📜 Ivory"
+        case .lightGrey: return "⬜ Light Grey"
+        case .offWhite: return "📰 Off-White"
+        case .cream: return "🥛 Cream"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .black: return .black
+        case .darkBlue: return Color.blue.opacity(0.9)
+        case .navy: return Color(red: 0.1, green: 0.1, blue: 0.2)
+        case .darkGreen: return Color.green.opacity(0.9)
+        case .white: return .white
+        case .ivory: return Color(red: 1.0, green: 1.0, blue: 0.98)
+        case .lightGrey: return Color.gray.opacity(0.9)
+        case .offWhite: return Color(red: 0.98, green: 0.98, blue: 1.0)
+        case .cream: return Color(red: 1.0, green: 0.98, blue: 0.92)
+        }
+    }
+
+    static func color(for key: String) -> Color {
+        ColorOption(rawValue: key)?.color ?? .white
     }
 }
 
